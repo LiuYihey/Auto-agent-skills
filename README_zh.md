@@ -61,7 +61,10 @@ npm run build
 
 `AUTOSKILLS_DIR` 用于指定这个 MCP 创建的个人技能存储目录。
 
-### 3. 开始使用
+### 3. 添加全局规则（推荐）
+给 agent 添加全局规则（rules\auto-skill-building.md）以提高此 MCP 的触发频率。
+
+### 4. 开始使用
 
 Agent 会全程自动处理：
 

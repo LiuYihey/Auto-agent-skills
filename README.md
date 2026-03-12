@@ -61,7 +61,10 @@ Add the Autoskills MCP server to your agent's config:
 
 `AUTOSKILLS_DIR` specifies where personal skills created by this MCP are stored.
 
-### 3. Start Using It
+### 3. Add Global Rules (Recommended)
+Add this global rule (rules/auto-skill-building.md) to your agent to increase the frequency of this MCP's trigger.
+
+### 4. Start Using It
 
 The agent handles everything automatically:
 
