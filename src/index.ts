@@ -166,9 +166,9 @@ server.tool(
   "search_skill",
   "When starting a new task, first decide which skill domain would help most, then call this to find and install relevant skills. The tool searches the public skill ecosystem, installs the best match, and tells you which execution stages should reference it (adapt to your context, don't copy blindly).",
   {
-    task_context: z.string().optional().describe("Task summary from the user request"),
-    candidate_skill: z.string().optional().describe("One candidate skill focus decided by the agent before search"),
-    query: z.string().optional().describe("Legacy fallback query (for compatibility)"),
+    task_context: z.string().optional().describe("Task summary from the user request. MUST BE TRANSLATED TO ENGLISH for better search results."),
+    candidate_skill: z.string().optional().describe("One candidate skill focus decided by the agent before search. MUST BE IN ENGLISH."),
+    query: z.string().optional().describe("Legacy fallback query (for compatibility). MUST BE IN ENGLISH."),
   },
   async ({ task_context, candidate_skill, query }) => {
     try {
@@ -183,6 +183,25 @@ server.tool(
       }
 
       const decision = inferSkillFocus(sourceContext, candidate_skill);
+
+      const localResults = searchLocalSkills(decision.searchQuery);
+      if (localResults.length > 0) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            found: true,
+            source: "local",
+            task_context: sourceContext,
+            candidate_skill: candidate_skill || null,
+            search_query: decision.searchQuery,
+            top_result: localResults[0],
+            all_results: localResults,
+            suggest: decision.suggest,
+            usage_note: "Reference the local skill in relevant stages, but adapt to your project context instead of copying directly.",
+            message: `Found ${localResults.length} local skill(s) for query "${decision.searchQuery}". Top match: "${localResults[0].name}". Proceed to use it.`,
+          }) }],
+        };
+      }
+
       const results = await searchPublicSkills(decision.searchQuery);
 
       if (results.length === 0) {
