@@ -419,59 +419,105 @@ export function searchPublicSkills(query: string): Promise<PublicSkillResult[]> 
       results.sort((a, b) => b.installs - a.installs);
       resolve(results);
     });
-
-    proc.on("error", () => resolve([]));
   });
 }
 
 export function installPublicSkill(pkg: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    // Parse package format: owner/repo@skill-name
-    const match = pkg.match(/^([\w.-]+)\/([\w.-]+)@([\w.-]+)$/);
-    if (!match) {
-      reject(new Error(`Invalid package format: ${pkg}. Expected: owner/repo@skill-name`));
-      return;
+    const parts = pkg.split("@");
+    let repoPath: string;
+    let skillName: string;
+    
+    if (parts.length === 2) {
+      repoPath = parts[0];
+      skillName = parts[1];
+    } else if (parts.length === 1) {
+      repoPath = parts[0];
+      skillName = repoPath.split("/").pop() || repoPath;
+    } else {
+      return reject(new Error(`Invalid package format: ${pkg}. Expected format: owner/repo[@skill-name]`));
     }
 
-    const [, owner, repo, skillName] = match;
-    const skillsDir = getSkillsDir();
-    const targetDir = path.join(skillsDir, skillName);
-    const tempDir = path.join(os.tmpdir(), `skills-install-${Date.now()}`);
+    // Use a GitHub mirror/proxy for cloning to prevent connection resets
+    const githubMirror = process.env.GITHUB_MIRROR || "https://mirror.ghproxy.com/https://github.com";
+    // Format the URL carefully: mirror url + repo path
+    let repoUrl = "";
+    if (githubMirror.endsWith("/")) {
+        repoUrl = `${githubMirror}${repoPath}.git`;
+    } else {
+        // If the mirror is just the host like https://mirror.ghproxy.com, append github.com path
+        if (!githubMirror.includes("github.com")) {
+            repoUrl = `${githubMirror}/https://github.com/${repoPath}.git`;
+        } else {
+            repoUrl = `${githubMirror}/${repoPath}.git`;
+        }
+    }
 
-    // Clone the repository
-    const cloneProc = spawn("git", ["clone", `https://github.com/${owner}/${repo}.git`, tempDir], {
-      stdio: "pipe",
+    const tempDir = path.join(os.tmpdir(), `skills-install-${Date.now()}`);
+    
+    // Use spawn to execute git clone with SSL verification disabled
+    const cloneProc = spawn("git", ["-c", "http.sslVerify=false", "clone", repoUrl, tempDir], {
+      stdio: "ignore",
+      shell: true,
     });
 
-    let cloneError = "";
-    cloneProc.stderr?.on("data", (data) => { cloneError += data.toString(); });
-
-    cloneProc.on("close", (cloneCode) => {
-      if (cloneCode !== 0) {
-        reject(new Error(`Failed to clone repository: ${cloneError}`));
-        return;
+    cloneProc.on("close", (code) => {
+      if (code !== 0) {
+        return reject(new Error(`Failed to clone repository: ${repoUrl}`));
       }
 
-      const skillSourceDir = resolveSkillSourceDir(tempDir, skillName);
-      if (!skillSourceDir) {
+      try {
+        // Find the skill directory
+        let sourceSkillDir = tempDir;
+        if (parts.length === 2) {
+          // Look for the specific skill directory
+          const specificDir = path.join(tempDir, skillName);
+          if (fs.existsSync(specificDir) && fs.statSync(specificDir).isDirectory()) {
+            sourceSkillDir = specificDir;
+          } else {
+            // Search recursively
+            const findSkillDir = (dir: string): string | null => {
+              const entries = fs.readdirSync(dir, { withFileTypes: true });
+              for (const entry of entries) {
+                if (entry.isDirectory() && !entry.name.startsWith(".")) {
+                  if (entry.name === skillName) {
+                    return path.join(dir, entry.name);
+                  }
+                  const found = findSkillDir(path.join(dir, entry.name));
+                  if (found) return found;
+                }
+              }
+              return null;
+            };
+            const found = findSkillDir(tempDir);
+            if (found) {
+              sourceSkillDir = found;
+            } else {
+              throw new Error(`Skill ${skillName} not found in repository ${repoPath}`);
+            }
+          }
+        }
+
+        const targetDir = path.join(getSkillsDir(), skillName);
+        
+        // Remove existing if any
+        if (fs.existsSync(targetDir)) {
+          fs.rmSync(targetDir, { recursive: true, force: true });
+        }
+        
+        // Copy the specific skill directory
+        copyDir(sourceSkillDir, targetDir);
+        
+        // Clean up temp dir
         fs.rmSync(tempDir, { recursive: true, force: true });
-        reject(new Error(`Skill "${skillName}" not found in repository ${owner}/${repo}`));
-        return;
+
+        // Create symlink in .agents/skills
+        createSymlinkForSkill(skillName);
+
+        resolve(targetDir);
+      } catch (err: any) {
+        reject(new Error(`Installation failed: ${err.message}`));
       }
-
-      if (fs.existsSync(targetDir)) {
-        fs.rmSync(targetDir, { recursive: true, force: true });
-      }
-
-      copyDir(skillSourceDir, targetDir);
-
-      // Clean up temp directory
-      fs.rmSync(tempDir, { recursive: true, force: true });
-
-      // Create symlink in .agents/skills
-      createSymlinkForSkill(skillName);
-
-      resolve(targetDir);
     });
 
     cloneProc.on("error", (err) => reject(new Error(`Failed to run git clone: ${err.message}`)));
@@ -517,6 +563,7 @@ export function listGlobalSkills(): string[] {
 export interface LocalSkillResult {
   name: string;
   path: string;
+  score?: number;
 }
 
 export function searchLocalSkills(query: string): LocalSkillResult[] {
@@ -525,7 +572,12 @@ export function searchLocalSkills(query: string): LocalSkillResult[] {
   
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   const results: LocalSkillResult[] = [];
-  const queryLower = query.toLowerCase();
+  
+  // Escape regex specials
+  const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Use word boundary to avoid false positive substring matches (e.g. "cat" in "category")
+  const wordRegex = new RegExp(`\\b${safeQuery}\\b`, 'i');
+  const substringRegex = new RegExp(safeQuery, 'i');
   
   for (const entry of entries) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -534,22 +586,37 @@ export function searchLocalSkills(query: string): LocalSkillResult[] {
     const skillPath = path.join(dir, skillName);
     const skillMd = path.join(skillPath, "SKILL.md");
     
-    if (skillName.toLowerCase().includes(queryLower)) {
-      results.push({ name: skillName, path: skillPath });
-      continue;
+    let score = 0;
+    
+    // 1. Direct name match (highest priority)
+    if (wordRegex.test(skillName)) {
+      score += 10;
+    } else if (substringRegex.test(skillName)) {
+      score += 5;
     }
     
+    // 2. Content match (metadata only)
     if (fs.existsSync(skillMd)) {
       try {
-        const content = fs.readFileSync(skillMd, "utf-8").toLowerCase();
-        if (content.includes(queryLower)) {
-          results.push({ name: skillName, path: skillPath });
+        const content = fs.readFileSync(skillMd, "utf-8");
+        
+        // Match in frontmatter (description, tags) has medium priority
+        const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (frontmatterMatch && wordRegex.test(frontmatterMatch[1])) {
+          score += 3;
         }
       } catch {
         // Ignore read errors
       }
     }
+    
+    if (score > 0) {
+      results.push({ name: skillName, path: skillPath, score });
+    }
   }
+  
+  // Sort by score descending so the most relevant skill comes first
+  results.sort((a, b) => (b.score || 0) - (a.score || 0));
   
   return results;
 }
