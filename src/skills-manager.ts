@@ -438,25 +438,13 @@ export function installPublicSkill(pkg: string): Promise<string> {
       return reject(new Error(`Invalid package format: ${pkg}. Expected format: owner/repo[@skill-name]`));
     }
 
-    // Use a GitHub mirror/proxy for cloning to prevent connection resets
-    const githubMirror = process.env.GITHUB_MIRROR || "https://mirror.ghproxy.com/https://github.com";
-    // Format the URL carefully: mirror url + repo path
-    let repoUrl = "";
-    if (githubMirror.endsWith("/")) {
-        repoUrl = `${githubMirror}${repoPath}.git`;
-    } else {
-        // If the mirror is just the host like https://mirror.ghproxy.com, append github.com path
-        if (!githubMirror.includes("github.com")) {
-            repoUrl = `${githubMirror}/https://github.com/${repoPath}.git`;
-        } else {
-            repoUrl = `${githubMirror}/${repoPath}.git`;
-        }
-    }
+    // Use SSH URL for GitHub repositories to leverage local SSH configuration
+    const repoUrl = `git@github.com:${repoPath}.git`;
 
     const tempDir = path.join(os.tmpdir(), `skills-install-${Date.now()}`);
     
-    // Use spawn to execute git clone with SSL verification disabled
-    const cloneProc = spawn("git", ["-c", "http.sslVerify=false", "clone", repoUrl, tempDir], {
+    // Use spawn to execute git clone via SSH
+    const cloneProc = spawn("git", ["clone", repoUrl, tempDir], {
       stdio: "ignore",
       shell: true,
     });

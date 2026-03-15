@@ -19,6 +19,7 @@ import {
 import {
   getSkillCreatorGuide,
   getSkillUpdaterGuide,
+  getReviewTaskGuide,
 } from "./builtin-skills.js";
 
 const server = new McpServer({
@@ -100,61 +101,38 @@ server.tool(
   {
     task_description: z.string().describe("What task was completed"),
     solution_summary: z.string().describe("How the task was solved"),
-    skills_used: z
-      .array(z.string())
-      .optional()
-      .describe("Skills used in this task, if any"),
-    skill_issues: z
-      .string()
-      .optional()
-      .describe("Any issues encountered with the skills"),
+    skills_used: z.array(z.string()).optional().describe("Skills used in this task, if any"),
+    skill_issues: z.string().optional().describe("Any issues encountered with the skills"),
   },
   async ({ task_description, solution_summary, skills_used, skill_issues }) => {
-    const existingSkills = listSkills();
+    const reviewGuide = getReviewTaskGuide();
+
+    if (!reviewGuide) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "review-task builtin skill not found",
+            }),
+          },
+        ],
+      };
+    }
+
     const usedSkills = skills_used ?? [];
     const hasUsedSkills = usedSkills.length > 0;
-    const hasIssues = skill_issues && skill_issues.trim().length > 0;
-
-    if (hasUsedSkills && hasIssues) {
-      const skillDetails = usedSkills
-        .map((name) => {
-          const skill = getSkill(name);
-          return skill
-            ? `- **${skill.meta.name}**: ${skill.meta.description}`
-            : `- **${name}**: (skill not found)`;
-        })
-        .join("\n");
-
-      const updaterGuide = getSkillUpdaterGuide();
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Skills used had issues:\n\n${skillDetails}\n\nIssues: ${skill_issues}\n\n**Action**: Improve these skills using update_skill`,
-          },
-        ],
-      };
-    }
-
-    if (hasUsedSkills && !hasIssues) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Skills used worked well: ${usedSkills.join(", ")}. No changes needed.`,
-          },
-        ],
-      };
-    }
-
-    const existingNames = existingSkills.map((s) => s.name).join(", ") || "none";
-    const creatorGuide = getSkillCreatorGuide();
+    const hasIssues = !!skill_issues;
 
     return {
       content: [
         {
-          type: "text" as const,
-          text: `Task completed without using skills.\n\n**Task**: ${task_description}\n**Solution**: ${solution_summary}\n\n**Existing skills**: ${existingNames}\n\n**Action**: Consider creating a new skill with create_skill to make this solution reusable`,
+          type: "resource" as const,
+          resource: {
+            uri: `builtin://review-task/SKILL.md`,
+            mimeType: "text/markdown",
+            text: `${reviewGuide.content}\n\n---\n\n**Current Task Context:**\n- Task: ${task_description}\n- Solution: ${solution_summary}\n- Skills used: ${hasUsedSkills ? usedSkills.join(", ") : "none"}\n- Issues: ${hasIssues ? skill_issues : "none"}`,
+          },
         },
       ],
     };
@@ -184,24 +162,7 @@ server.tool(
 
       const decision = inferSkillFocus(sourceContext, candidate_skill);
 
-      const localResults = searchLocalSkills(decision.searchQuery);
-      if (localResults.length > 0) {
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify({
-            found: true,
-            source: "local",
-            task_context: sourceContext,
-            candidate_skill: candidate_skill || null,
-            search_query: decision.searchQuery,
-            top_result: localResults[0],
-            all_results: localResults,
-            suggest: decision.suggest,
-            usage_note: "Reference the local skill in relevant stages, but adapt to your project context instead of copying directly.",
-            message: `Found ${localResults.length} local skill(s) for query "${decision.searchQuery}". Top match: "${localResults[0].name}". Proceed to use it.`,
-          }) }],
-        };
-      }
-
+      // Search remote public skills directly (local search removed)
       const results = await searchPublicSkills(decision.searchQuery);
 
       if (results.length === 0) {
@@ -221,12 +182,21 @@ server.tool(
       const top = results[0];
       let installed = false;
       let installError = "";
+      let skillDescription = "";
+      let usageRecommendation = "";
 
       try {
         await installPublicSkill(top.package);
         const skillName = top.package.split("@")[1];
         createSymlinkForSkill(skillName);
         installed = true;
+
+        // Read skill description after successful installation
+        const skill = getSkill(skillName);
+        if (skill) {
+          skillDescription = skill.meta.description;
+          usageRecommendation = `Review skill description: "${skillDescription}". If this matches your task needs, use this skill; otherwise, proceed with general capabilities.`;
+        }
       } catch (err) {
         installError = (err as Error).message;
       }
@@ -241,10 +211,10 @@ server.tool(
           all_results: results,
           installed,
           install_error: installError || undefined,
-          suggest: decision.suggest,
-          usage_note: "Reference the skill in relevant stages, but adapt to your project context instead of copying directly.",
+          skill_description: skillDescription || undefined,
+          usage_recommendation: usageRecommendation || undefined,
           message: installed
-            ? `Skill "${top.package}" installed for query "${decision.searchQuery}". Reference it in later execution stages (not verbatim), then call review_task after task completion.`
+            ? `Skill "${top.package}" installed. ${usageRecommendation || "Reference it in later execution stages, then call review_task after completion."}`
             : `Found skill "${top.package}" but installation failed: ${installError}. You can install manually with: npx skills add ${top.package}`,
         }) }],
       };
@@ -275,34 +245,29 @@ server.tool(
     tags: z.array(z.string()).optional().describe("Tags for categorization"),
   },
   async ({ name, description, title, when_to_use, instructions, tags }) => {
-    try {
-      const filePath = createSkill(name, description, title, when_to_use, instructions, tags ?? []);
+    const creatorGuide = getSkillCreatorGuide();
+    
+    if (!creatorGuide) {
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              success: true,
-              message: `Skill "${name}" created successfully.`,
-              path: filePath,
-              skills_dir: getSkillsDir(),
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              success: false,
-              error: (err as Error).message,
-            }),
-          },
-        ],
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            error: "skill-creator builtin skill not found",
+          }),
+        }],
       };
     }
+
+    return {
+      content: [{
+        type: "resource" as const,
+        resource: {
+          uri: `builtin://skill-creator/SKILL.md`,
+          mimeType: "text/markdown",
+          text: `${creatorGuide.content}\n\n---\n\n**Skill to Create:**\n- Name: ${name}\n- Description: ${description}\n- Title: ${title}\n- When to use: ${when_to_use}\n- Instructions: ${instructions}\n- Tags: ${tags?.join(", ") || "none"}`,
+        },
+      }],
+    };
   }
 );
 
@@ -319,39 +284,36 @@ server.tool(
     tags: z.array(z.string()).optional().describe("Updated tags"),
   },
   async ({ name, description, title, when_to_use, instructions, tags }) => {
-    try {
-      const filePath = updateSkill(name, {
-        description: description ?? undefined,
-        title: title ?? undefined,
-        whenToUse: when_to_use ?? undefined,
-        instructions: instructions ?? undefined,
-        tags: tags ?? undefined,
-      });
+    const updaterGuide = getSkillUpdaterGuide();
+    
+    if (!updaterGuide) {
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              success: true,
-              message: `Skill "${name}" updated successfully.`,
-              path: filePath,
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              success: false,
-              error: (err as Error).message,
-            }),
-          },
-        ],
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            error: "skill-updater builtin skill not found",
+          }),
+        }],
       };
     }
+
+    const updates = [];
+    if (description) updates.push(`Description: ${description}`);
+    if (title) updates.push(`Title: ${title}`);
+    if (when_to_use) updates.push(`When to use: ${when_to_use}`);
+    if (instructions) updates.push(`Instructions: ${instructions}`);
+    if (tags) updates.push(`Tags: ${tags.join(", ")}`);
+
+    return {
+      content: [{
+        type: "resource" as const,
+        resource: {
+          uri: `builtin://skill-updater/SKILL.md`,
+          mimeType: "text/markdown",
+          text: `${updaterGuide.content}\n\n---\n\n**Skill to Update:**\n- Name: ${name}\n${updates.length > 0 ? `- Updates:\n  - ${updates.join("\n  - ")}` : "- No specific updates provided"}`,
+        },
+      }],
+    };
   }
 );
 

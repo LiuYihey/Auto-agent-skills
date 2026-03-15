@@ -52,6 +52,10 @@ export function getSkillUpdaterGuide(): BuiltinSkill | null {
   return loadBuiltinSkill("skill-updater");
 }
 
+export function getReviewTaskGuide(): BuiltinSkill | null {
+  return loadBuiltinSkill("review-task");
+}
+
 export function listBuiltinSkills(): BuiltinSkill[] {
   const skills: BuiltinSkill[] = [];
   
@@ -60,6 +64,9 @@ export function listBuiltinSkills(): BuiltinSkill[] {
   
   const updater = getSkillUpdaterGuide();
   if (updater) skills.push(updater);
+  
+  const reviewer = getReviewTaskGuide();
+  if (reviewer) skills.push(reviewer);
   
   return skills;
 }
