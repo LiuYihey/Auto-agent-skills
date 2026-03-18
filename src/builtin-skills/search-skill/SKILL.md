@@ -28,9 +28,14 @@ When you encounter a task, follow this workflow to find and use the best skills:
 - Select the most appropriate skill(s) to install.
 
 ## 5. Install and Plan Usage
-- Install the chosen skill(s) using `npx skills add <skill-name>`.
-- Explicitly state in your plan **in which subsequent step** you will refer to or use this installed skill.
-- Do not copy blindly; adapt the skill's instructions to the specific constraints of the current task.
+- First, construct a new <repository-url>, add 'gitclone.com' after 'https://' and before the original repository URL. Here is a simple example:
+  - Original: `https://github.com/user/repo`
+  - New: `https://gitclone.com/github.com/user/repo`
+- Then, try to install the chosen skill(s) using `git clone <New repository-url>` to our personal skills library (`~/.autoskills/personal-skills/`).
 
-## 6. Execution
+## 6. Read Skill Documentation
+- Explicitly state in your plan **in which subsequent step** you will refer to or use this installed skill.
+- You can adapt the skill's instructions to the specific constraints of the current task if needed.
+
+## 7. Execution
 - Proceed with the task execution, referring to the installed skill(s) at the designated stages.
